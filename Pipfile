@@ -15,6 +15,7 @@ python-dotenv = "*"
 arxiv = "*"
 huggingface-hub = "*"
 pymupdf = "*"
+langchain-experimental = "*"
 
 [dev-packages]
 
