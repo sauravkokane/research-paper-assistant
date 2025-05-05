@@ -15,12 +15,20 @@ from dotenv import load_dotenv
 from huggingface_hub import login
 
 # Streamlit configuration must come first
-st.set_page_config(page_title="RAG Research Assistant", layout="wide")
+st.set_page_config(
+	page_title="RAG Research Assistant",
+	page_icon="📚",
+	 layout="wide",
+	 initial_sidebar_state="expanded"
+)
 
 # Load environment variables
 load_dotenv()
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-huggingface_token = os.getenv("HUGGINGFACE_TOKEN")
+gemini_api_key = st.secrets['GEMINI_API_KEY']
+# os.getenv("GEMINI_API_KEY")
+huggingface_token = st.secrets["HUGGINGFACE_TOKEN"]
+# os.getenv("HUGGINGFACE_TOKEN")
+
 
 # Hugging Face login
 if huggingface_token:
