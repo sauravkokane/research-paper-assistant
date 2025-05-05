@@ -4,6 +4,16 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
+streamlit = "*"
+pypdf2 = "*"
+sentence-transformers = "*"
+chromadb = "*"
+litellm = "*"
+langchain = "*"
+langchain-community = "*"
+python-dotenv = "*"
+arxiv = "*"
+huggingface-hub = "*"
 
 [dev-packages]
 
