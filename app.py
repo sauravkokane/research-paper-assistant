@@ -1,144 +1,170 @@
-# Import all dependencies
+# app.py
+# Streamlit RAG-powered Research Paper Assistant
+# Improved visualization, caching, and correct arXiv parsing
+
 import os
+import hashlib
 import PyPDF2
 import streamlit as st
 from sentence_transformers import SentenceTransformer
 import chromadb
 from litellm import completion
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.tools import ArxivQueryRun
+from langchain_community.utilities.arxiv import ArxivAPIWrapper
 from dotenv import load_dotenv
 from huggingface_hub import login
 
-#loading of environment variables
+# Streamlit configuration must come first
+st.set_page_config(page_title="RAG Research Assistant", layout="wide")
+
+# Load environment variables
 load_dotenv()
 gemini_api_key = os.getenv("GEMINI_API_KEY")
 huggingface_token = os.getenv("HUGGINGFACE_TOKEN")
 
-
-# huggingface login
+# Hugging Face login
 if huggingface_token:
     login(token=huggingface_token)
 
-# configure and create vector database
-@st.cache_resource
-def get_chroma_client():
-    return chromadb.PersistentClient(path="./database/chroma_db")
-
+# Cache heavy resources
 @st.cache_resource
 def load_text_embedding_model():
     return SentenceTransformer('all-MiniLM-L6-v2')
 
+@st.cache_resource
+def get_chroma_client():
+    return chromadb.PersistentClient(path="./database/chroma_db")
+
 text_embedding_model = load_text_embedding_model()
 client = get_chroma_client()
+# Use API wrapper to get structured docs
+arxiv_wrapper = ArxivAPIWrapper(top_k_results=3, load_max_docs=3, load_all_available_meta=True)
 
-arxiv_tool = ArxivQueryRun()
+# Utility: hash text
+def get_text_hash(text: str) -> str:
+    return hashlib.md5(text.encode()).hexdigest()
 
-# pdf to text - transcript fetch
+# Extract text from uploaded PDFs
 def extract_text_from_pdfs(uploaded_files):
     all_text = ""
-    for uploaded_file in uploaded_files:
-        reader = PyPDF2.PdfReader(uploaded_file)
+    for f in uploaded_files:
+        reader = PyPDF2.PdfReader(f)
         for page in reader.pages:
             all_text += page.extract_text() or ""
     return all_text
 
-
-# text processing - splitter + store in vectors
-def process_text_and_store(all_text):
+# Process and store text in ChromaDB
+def process_text_and_store(all_text: str):
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=500, chunk_overlap=50, separators=["\n\n", "\n", " ", ""]
     )
     chunks = text_splitter.split_text(all_text)
+    collection = client.get_or_create_collection(name="knowledge_base")
 
-    try:
-        collection = client.get_or_create_collection(name="knowledge_base")
-        
-        # Manually delete all existing documents
-        existing = collection.get()
-        if "ids" in existing and existing["ids"]:
-            collection.delete(ids=existing["ids"])
-    except Exception as e:
-        st.error(f"Error accessing collection: {e}")
-        return None
+    # Clear existing docs
+    existing = collection.get()
+    if existing.get("ids"):
+        collection.delete(ids=existing["ids"])
 
+    # Add new chunks
     for i, chunk in enumerate(chunks):
-        embedding = text_embedding_model.encode(chunk)
+        emb = text_embedding_model.encode(chunk).tolist()
         collection.add(
             ids=[f"chunk_{i}"],
-            embeddings=[embedding.tolist()],
-            metadatas=[{"source": "pdf", "chunk_id": i}],
+            embeddings=[emb],
+            metadatas=[{"source": "text", "chunk_id": i}],
             documents=[chunk]
         )
-
-    st.session_state["collection"] = collection
+    st.session_state.collection = collection
     return collection
 
-
-# search in vector database - Retriver
-def semantic_search(query, collection, top_k=3):
-    query_embedding = text_embedding_model.encode(query)
-    results = collection.query(
-        query_embeddings=[query_embedding.tolist()], n_results=top_k
-    )
+# Semantic search
+def semantic_search(query: str, collection, top_k: int = 3):
+    q_emb = text_embedding_model.encode(query).tolist()
+    results = collection.query(query_embeddings=[q_emb], n_results=top_k)
     return results
 
-# create prompt and generate response - Augmentation + Generation
-def generate_response(query, context):
-    prompt = f"Query: {query}\nContext: {context}\nAnswer:"
-    response = completion(
+# Generate response via LLM
+def generate_response(query: str, context: str) -> str:
+    prompt = f"Query: {query}\nContext: {context}\nAnswer:"  
+    resp = completion(
         model="gemini/gemini-1.5-flash",
-        messages=[{"content": prompt, "role": "user"}],
+        messages=[{"role": "user", "content": prompt}],
         api_key=gemini_api_key
     )
-    return response['choices'][0]['message']['content']
+    return resp['choices'][0]['message']['content']
 
-def main():
-    st.title("RAG-powered Research Paper Assistant")
+# Streamlit UI
+st.title("🧠 RAG-powered Research Paper Assistant")
 
-    # Option to choose between PDF upload and arXiv search
-    option = st.radio("Choose an option:", ("Upload PDFs", "Search arXiv"))
+# Sidebar for inputs
+with st.sidebar:
+    st.header("Options")
+    mode = st.radio("Mode", ["Upload PDFs", "Search arXiv"] )
+    st.markdown("---")
 
-    if option == "Upload PDFs":
-        uploaded_files = st.file_uploader("Upload PDF files", accept_multiple_files=True, type=["pdf"])
-        if uploaded_files:
-            st.write("Processing uploaded files...")
-            all_text = extract_text_from_pdfs(uploaded_files)
-            collection = process_text_and_store(all_text)
-            st.success("PDF content processed and stored successfully!")
-
+if mode == "Upload PDFs":
+    uploaded = st.file_uploader("Upload PDF files", type=["pdf"], accept_multiple_files=True)
+    if uploaded:
+        if st.button("Process PDFs"):
+            with st.spinner("Extracting and indexing PDF content..."):
+                text = extract_text_from_pdfs(uploaded)
+                # avoid reprocessing same text
+                text_hash = get_text_hash(text)
+                if st.session_state.get("last_hash") != text_hash:
+                    collection = process_text_and_store(text)
+                    st.session_state.last_hash = text_hash
+                    st.success("PDF content indexed.")
+                else:
+                    collection = st.session_state.collection
+                    st.info("Content unchanged. Using cached index.")
+        if st.session_state.get("collection"):
             query = st.text_input("Enter your query:")
-            if st.button("Execute Query") and query:
-                results = semantic_search(query, collection)
-                context = "\n".join(results['documents'][0])
-                response = generate_response(query, context)
-                st.subheader("Generated Response:")
-                st.write(response)
+            if st.button("Get Answer") and query:
+                with st.spinner("Running semantic search and generating answer..."):
+                    results = semantic_search(query, st.session_state.collection)
+                    docs = results['documents'][0]
+                    # Show contexts in expander
+                    for idx, doc in enumerate(docs):
+                        with st.expander(f"Context chunk {idx}"):
+                            st.write(doc)
+                    answer = generate_response(query, "\n".join(docs))
+                    st.subheader("Answer")
+                    st.markdown(answer)
 
-    elif option == "Search arXiv":
-        query = st.text_input("Enter your search query for arXiv:")
+else:
+    search_q = st.text_input("Search arXiv for papers:")
+    if st.button("Search"): 
+        with st.spinner("Querying arXiv..."):
+            docs = arxiv_wrapper.load(search_q)
+            # Display results in table
+            rows = []
+            for doc in docs:
+                meta = doc.metadata
+                rows.append({
+                    "Title": meta.get("title"),
+                    "Authors": ", ".join(meta.get("authors", [])),
+                    "Published": meta.get("published"),
+                    "ID": meta.get("entry_id") or meta.get("id")
+                })
+            st.dataframe(rows)
+            # index concatenated content
+            full_text = "\n".join([d.page_content for d in docs])
+            process_text_and_store(full_text)
+            st.success("Paper abstracts indexed.")
+    if st.session_state.get("collection"):
+        q2 = st.text_input("Ask a question about these papers:")
+        if st.button("Get Paper Answer") and q2:
+            with st.spinner("Generating answer from paper context..."):
+                res = semantic_search(q2, st.session_state.collection)
+                docs = res['documents'][0]
+                for idx, doc in enumerate(docs):
+                    with st.expander(f"Context chunk {idx}"):
+                        st.write(doc)
+                ans = generate_response(q2, "\n".join(docs))
+                st.subheader("Paper Answer")
+                st.markdown(ans)
 
-        if st.button("Search ArXiv") and query:
-            arxiv_results = arxiv_tool.invoke(query)
-            st.session_state["arxiv_results"] = arxiv_results  
-            st.subheader("Search Results:")
-            st.write(arxiv_results)
-
-            collection = process_text_and_store(arxiv_results)
-            st.session_state["collection"] = collection  
-
-            st.success("arXiv paper content processed and stored successfully!")
-
-        # Only allow querying if search has been performed
-        if "arxiv_results" in st.session_state and "collection" in st.session_state:
-            query = st.text_input("Ask a question about the paper:")
-            if st.button("Execute Query on Paper") and query:
-                results = semantic_search(query, st.session_state["collection"])
-                context = "\n".join(results['documents'][0])
-                response = generate_response(query, context)
-                st.subheader("Generated Response:")
-                st.write(response)
-
-
-if __name__ == '__main__':
-	main()
+# Footer
+st.markdown("---")
+st.caption("Built with Streamlit, ChromaDB, SentenceTransformers, and Gemini LLM.")
