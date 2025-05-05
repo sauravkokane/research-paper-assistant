@@ -1,7 +1,3 @@
-# app.py
-# Streamlit RAG-powered Research Paper Assistant
-# Improved visualization, caching, and correct arXiv parsing
-
 import os
 import hashlib
 import PyPDF2
@@ -37,7 +33,7 @@ if huggingface_token:
 # Cache heavy resources
 @st.cache_resource
 def load_text_embedding_model():
-    return SentenceTransformer('all-MiniLM-L6-v2')
+    return SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
 
 @st.cache_resource
 def get_chroma_client():
@@ -76,7 +72,7 @@ def process_text_and_store(all_text: str):
 
     # Add new chunks
     for i, chunk in enumerate(chunks):
-        emb = text_embedding_model.encode(chunk).tolist()
+        emb = text_embedding_model.encode(chunk, ).tolist()
         collection.add(
             ids=[f"chunk_{i}"],
             embeddings=[emb],
