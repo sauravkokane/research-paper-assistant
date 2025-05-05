@@ -59,7 +59,6 @@ def process_text_and_store(all_text: str):
         chunk_size=500, chunk_overlap=50, separators=["\n\n", "\n", " ", ""]
     )
     chunks = text_splitter.split_text(all_text)
-    print(chunks)
     collection = client.get_or_create_collection(name="knowledge_base")
 
     # Clear existing docs
